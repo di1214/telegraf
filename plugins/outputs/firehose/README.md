@@ -39,11 +39,15 @@ The region is the Amazon region that you wish to connect to. Examples include bu
 
 ### delivery_stream_name
 
-The delivery_stream_name config variable is used by the plugin to ensure that data is sent to the correct Kinesis Firehose delivery stream. 
+The delivery_stream_name config variable is used by the plugin to ensure that data is sent to the correct Kinesis Firehose delivery stream.
 It is important to note that the stream *MUST* be pre-configured for this plugin to function correctly.
 
 ### max_submit_attempts
 The maximum number of times to attempt resubmitting a single metric, the sample config defautls to 10.
+
+### batch_metrics
+If set to `true` multiple metrics will be added to a single firehose record up to 1000KB
+Otherwise firehose will round up each record to 5kb for billing
 
 ### data_format
 Each data format has its own unique set of configuration options, read

@@ -15,7 +15,7 @@ import (
 
 type (
 	errorEntry struct {
-		submitAttemptCount int64
+		submitAttemptCount int
 		batch              []*firehose.Record
 	}
 )
@@ -32,7 +32,8 @@ type (
 
 		DeliveryStreamName string `toml:"delivery_stream_name"`
 		Debug              bool   `toml:"debug"`
-		MaxSubmitAttempts  int64  `toml:"max_submit_attempts"`
+		MaxSubmitAttempts  int    `toml:"max_submit_attempts"`
+		BatchMetrics       bool   `toml:"batch_metrics"`
 
 		svc         firehoseiface.FirehoseAPI
 		errorBuffer []*errorEntry
@@ -65,6 +66,9 @@ var sampleConfig = `
 
   ## The maximum number of times to attempt resubmitting a single metric
   max_submit_attempts = 10
+
+  ## If multiple metrics should be added to a single firehose record up to 1000KB
+  batch_metrics = false
 
   ## Data format to output.
   ## Each data format has its own unique set of configuration options, read
@@ -119,7 +123,7 @@ func (f *FirehoseOutput) SetSerializer(serializer serializers.Serializer) {
 
 // writeToFirehose uses the AWS GO SDK to write batched records to firehose and
 // queue the failed writes to the errorBuffer of f
-func writeToFirehose(f *FirehoseOutput, r []*firehose.Record, submitAttemptCount int64) {
+func writeToFirehose(f *FirehoseOutput, r []*firehose.Record, submitAttemptCount int) {
 	start := time.Now()
 	batchInput := &firehose.PutRecordBatchInput{}
 	batchInput.SetDeliveryStreamName(f.DeliveryStreamName)
@@ -151,36 +155,16 @@ func writeToFirehose(f *FirehoseOutput, r []*firehose.Record, submitAttemptCount
 		}
 
 		newErrorEntry := errorEntry{submitAttemptCount: submitAttemptCount + 1, batch: errorMetrics}
-		log.Printf("W! firehose: failed to write %d out of %d Telegraf metrics in %+v. Queuing failed metrics for later retry.\n", len(errorMetrics), len(r), time.Since(start))
+		log.Printf("W! firehose: failed to write %d out of %d Telegraf records in %+v. Queuing failed metrics for later retry.\n", len(errorMetrics), len(r), time.Since(start))
 		f.errorBuffer = append(f.errorBuffer, &newErrorEntry)
 	} else {
-		log.Printf("I! firehose: successfully sent %d Telegraf metrics in %+v\n", len(r), time.Since(start))
+		log.Printf("I! firehose: successfully sent %d Telegraf records in %+v\n", len(r), time.Since(start))
 	}
 
 }
 
-// Write function is responsible for first writing the batch entries held in
-// the errorBuffer of f and then writing metrics in batches of 500.
-func (f *FirehoseOutput) Write(metrics []telegraf.Metric) error {
+func writeBatchRecords(f *FirehoseOutput, metrics []telegraf.Metric) error {
 	var sz uint32
-
-	if len(metrics) == 0 {
-		return nil
-	}
-
-	// if we have any failures from last write, we will attempt them
-	// again here.  Note: we only try up to the max number of retry attempts
-	// as specified by the configuration file.
-	for i, entry := range f.errorBuffer {
-		log.Printf("I! firehose: processing %d batches with previous errors queued for retry.", len(f.errorBuffer))
-		if entry.submitAttemptCount <= f.MaxSubmitAttempts {
-			log.Printf("I! firehose: -> resending failed metric batch %d of %d.\n", i+1, len(f.errorBuffer))
-			writeToFirehose(f, entry.batch, entry.submitAttemptCount)
-		} else {
-			log.Printf("I! firehose: -> discarded failed metric batch %d of %d. Attempt #%d > MaxSubmitAttempts (%d).\n", i+1, len(f.errorBuffer), entry.submitAttemptCount, f.MaxSubmitAttempts)
-		}
-		log.Printf("I! firehose: done resending previous batches")
-	}
 
 	r := []*firehose.Record{}
 	for _, metric := range metrics {
@@ -213,6 +197,119 @@ func (f *FirehoseOutput) Write(metrics []telegraf.Metric) error {
 	}
 
 	return nil
+}
+
+func writeBatchMetrics(f *FirehoseOutput, metrics []telegraf.Metric) error {
+	var sz uint32
+	var rd []byte
+
+	r := []*firehose.Record{}
+	for _, metric := range metrics {
+		values, err := f.serializer.Serialize(metric)
+		if err != nil {
+			return err
+		}
+
+		// Firehose supports records of up to 1000kb
+		if (len(rd) + len(values)) > 1000000 {
+			sz++
+			d := firehose.Record{
+				Data: rd,
+			}
+
+			r = append(r, &d)
+
+			if f.Debug {
+				log.Println(metric)
+				log.Println("Adding record of max size %d", len(rd))
+				log.Println(d)
+			}
+
+			// Add current metric to next record
+			rd = values
+		} else {
+			// Combine multiple metrics to single record data
+			// Serializer already gurantees a newline after each record
+			rd = append(rd[:], values[:]...)
+
+			if f.Debug {
+				log.Println(metric)
+				log.Println("Length of record %d", len(rd))
+			}
+		}
+
+		if sz == 4 {
+			// Max Messages Per PutRecordRequest is 4mb
+			if f.Debug {
+				log.Println("Sending %d records to firehose", len(r))
+			}
+			writeToFirehose(f, r, 0)
+			sz = 0
+			r = nil
+		}
+	}
+	if len(rd) > 0 {
+		d := firehose.Record{
+			Data: rd,
+		}
+
+		if f.Debug {
+			log.Println("Adding remaining record of size %d", len(rd))
+		}
+
+		r = append(r, &d)
+
+		sz++
+	}
+	if sz > 0 {
+		writeToFirehose(f, r, 0)
+	}
+
+	return nil
+}
+
+// Write function is responsible for first writing the batch entries held in
+// the errorBuffer of f and then writing metrics in batches of 500.
+func (f *FirehoseOutput) Write(metrics []telegraf.Metric) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+
+	errorSize := len(f.errorBuffer)
+
+	if (errorSize > 0){
+		log.Printf("I! firehose: processing %d batches with previous errors queued for retry. Max Attempts %d", errorSize, f.MaxSubmitAttempts)
+
+		// Create a new errorBuffer otherwise writeToFirehouse keeps adding the same message on the buffer each attempt
+		lastBuffer := f.errorBuffer
+		f.errorBuffer = nil
+
+		// if we have any failures from last write, we will attempt them
+		// again here.  Note: we only try up to the max number of retry attempts
+		// as specified by the configuration file.
+		for i, entry := range lastBuffer {
+			if entry.submitAttemptCount <= f.MaxSubmitAttempts {
+				if f.Debug {
+					log.Printf("D! firehose: -> resending failed metric batch %d of %d.\n. Attempt #%d", i+1, errorSize, entry.submitAttemptCount)
+				}
+				writeToFirehose(f, entry.batch, entry.submitAttemptCount)
+			} else {
+				log.Printf("I! firehose: -> discarded failed metric batch %d of %d. Attempt #%d", i+1, errorSize, entry.submitAttemptCount)
+			}
+		}
+		log.Printf("I! firehose: done resending previous batches\n")
+	}
+
+	if f.Debug {
+		log.Printf("Sending multiple metrics in single record %b", f.BatchMetrics)
+	}
+
+	if f.BatchMetrics {
+		return writeBatchMetrics(f, metrics)
+	} else {
+		return writeBatchRecords(f, metrics)
+	}
 }
 
 func init() {
