@@ -158,7 +158,9 @@ func writeToFirehose(f *FirehoseOutput, r []*firehose.Record, submitAttemptCount
 		log.Printf("W! firehose: failed to write %d out of %d Telegraf records in %+v. Queuing failed metrics for later retry.\n", len(errorMetrics), len(r), time.Since(start))
 		f.errorBuffer = append(f.errorBuffer, &newErrorEntry)
 	} else {
-		log.Printf("I! firehose: successfully sent %d Telegraf records in %+v\n", len(r), time.Since(start))
+		if f.Debug {
+			log.Printf("D! firehose: successfully sent %d Telegraf records in %+v\n", len(r), time.Since(start))
+		}
 	}
 
 }
