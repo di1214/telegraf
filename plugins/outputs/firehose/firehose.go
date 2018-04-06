@@ -145,10 +145,11 @@ func writeToFirehose(f *FirehoseOutput, r []*firehose.Record, submitAttemptCount
 
 	// if we have a partial failure- issue a warning and then enqueue only the messages that failed
 	if *resp.FailedPutCount > 0 {
+		log.Printf("W! Partial Failed Firehose PutRecordBatch")
 
-		errorMetrics := make([]*firehose.Record, *resp.FailedPutCount)
+		errorMetrics := make([]*firehose.Record, 0, *resp.FailedPutCount)
 		for index, entry := range resp.RequestResponses {
-			//log.Printf(*entry.ErrorCode)
+			log.Printf("W! Failed Record %d ErrorCode: %s Error: %s", index, *entry.ErrorCode, *entry.ErrorMessage)
 			if entry.ErrorCode != nil {
 				errorMetrics = append(errorMetrics, r[index])
 			}
