@@ -55,6 +55,7 @@ var info = types.Info{
 	DockerRootDir:     "/var/lib/docker",
 	NoProxy:           "",
 	BridgeNfIP6tables: true,
+	ServerVersion:     "17.09.0-ce",
 }
 
 var containerList = []types.Container{
@@ -475,6 +476,20 @@ var containerInspect = types.ContainerJSON{
 			"ENVVAR6= ",
 			"ENVVAR7=ENVVAR8=ENVVAR9",
 			"PATH=/bin:/sbin",
+		},
+	},
+	ContainerJSONBase: &types.ContainerJSONBase{
+		State: &types.ContainerState{
+			Health: &types.Health{
+				FailingStreak: 1,
+				Status:        "Unhealthy",
+			},
+			Status:     "running",
+			OOMKilled:  false,
+			Pid:        1234,
+			ExitCode:   0,
+			StartedAt:  "2018-06-14T05:48:53.266176036Z",
+			FinishedAt: "0001-01-01T00:00:00Z",
 		},
 	},
 }

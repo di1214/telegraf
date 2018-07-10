@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/influxdata/telegraf"
@@ -17,15 +18,19 @@ var (
 )
 
 type Ipmi struct {
-	Path    string
-	Servers []string
-	Timeout internal.Duration
+	Path      string
+	Privilege string
+	Servers   []string
+	Timeout   internal.Duration
 }
 
 var sampleConfig = `
   ## optionally specify the path to the ipmitool executable
   # path = "/usr/bin/ipmitool"
-  #
+  ##
+  ## optionally force session privilege level. Can be CALLBACK, USER, OPERATOR, ADMINISTRATOR
+  # privilege = "ADMINISTRATOR"
+  ##
   ## optionally specify one or more servers via a url matching
   ##  [username[:password]@][protocol[(address)]]
   ##  e.g.
@@ -57,13 +62,18 @@ func (m *Ipmi) Gather(acc telegraf.Accumulator) error {
 	}
 
 	if len(m.Servers) > 0 {
+		wg := sync.WaitGroup{}
 		for _, server := range m.Servers {
-			err := m.parse(acc, server)
-			if err != nil {
-				acc.AddError(err)
-				continue
-			}
+			wg.Add(1)
+			go func(a telegraf.Accumulator, s string) {
+				defer wg.Done()
+				err := m.parse(a, s)
+				if err != nil {
+					a.AddError(err)
+				}
+			}(acc, server)
 		}
+		wg.Wait()
 	} else {
 		err := m.parse(acc, "")
 		if err != nil {
@@ -77,13 +87,11 @@ func (m *Ipmi) Gather(acc telegraf.Accumulator) error {
 func (m *Ipmi) parse(acc telegraf.Accumulator, server string) error {
 	opts := make([]string, 0)
 	hostname := ""
-
 	if server != "" {
-		conn := NewConnection(server)
+		conn := NewConnection(server, m.Privilege)
 		hostname = conn.Hostname
 		opts = conn.options()
 	}
-
 	opts = append(opts, "sdr")
 	cmd := execCommand(m.Path, opts...)
 	out, err := internal.CombinedOutputTimeout(cmd, m.Timeout.Duration)

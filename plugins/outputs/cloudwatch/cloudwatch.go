@@ -74,9 +74,9 @@ func (c *CloudWatch) Connect() error {
 
 	stsService := sts.New(configProvider)
 
-	params := &sts.GetSessionTokenInput{}
+	params := &sts.GetCallerIdentityInput{}
 
-	_, err := stsService.GetSessionToken(params)
+	_, err := stsService.GetCallerIdentity(params)
 
 	if err != nil {
 		log.Printf("E! cloudwatch: Cannot use credentials to connect to AWS : %+v \n", err.Error())
@@ -176,6 +176,8 @@ func BuildMetricDatum(point telegraf.Metric) []*cloudwatch.MetricDatum {
 		case int32:
 			value = float64(t)
 		case int64:
+			value = float64(t)
+		case uint64:
 			value = float64(t)
 		case float64:
 			value = t
