@@ -33,7 +33,9 @@ all:
 
 .PHONY: deps
 deps:
-	dep ensure -vendor-only
+	go get -u golang.org/x/lint/golint
+	go get -u github.com/golang/dep/cmd/dep
+	dep ensure
 
 .PHONY: telegraf
 telegraf:
