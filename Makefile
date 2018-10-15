@@ -22,7 +22,8 @@ all:
 	$(MAKE) telegraf
 
 deps:
-	go get -u -v github.com/golang/lint/golint
+	go get -u -v golang.org/x/lint/golint
+	go get -u github.com/golang/lint/golint
 	go get -u github.com/golang/dep/cmd/dep
 	dep ensure
 
